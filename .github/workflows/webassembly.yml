@@ -1,0 +1,127 @@
+name: webassembly
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  webassmebly:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os_name: [ubuntu]
+        ver:
+          - { cv: 4.8.1, cmake: 3.28.2, python: 3.8.18, ant: 1.10.14, jdk: openjdk-8-jdk }
+        list:
+          - { os_ver: 22.04, os_id: jammy }
+
+    name: ubuntu-webassembly
+    
+    env:
+      PKG_NAME: opencv-${{ matrix.ver.cv }}-macos-${{ matrix.list.os_ver }}
+      JAVA_PKG_NAME: opencv-${{ matrix.ver.cv }}-macos-${{ matrix.list.os_ver }}-java
+
+    steps:
+      - uses: numworks/setup-emscripten@v1
+        with:
+          sdk: latest-fastcomp
+      - run: emcc --version
+
+      # 检出代码
+      - uses: actions/checkout@v3
+
+      # 检出opencv
+      - name: checkout opencv
+        uses: actions/checkout@v3
+        with:
+          repository: opencv/opencv
+          path: opencv-${{ matrix.ver.cv }}
+          ref: ${{ matrix.ver.cv }}
+          submodules: recursive
+
+      # 安装openmp
+      #- name: install openmp
+      #  run: |
+      #    brew install libomp
+
+      # 复制
+      - name: copy
+        run: |
+          cp build-opencv4.sh opencv-${{ matrix.ver.cv }}
+          cp build-opencv4-java.sh opencv-${{ matrix.ver.cv }}
+          cp opencv4_cmake_options.txt opencv-${{ matrix.ver.cv }}
+
+      # 编译
+      - name: build
+        run: |
+          cd opencv-${{ matrix.ver.cv }}
+          chmod a+x build-opencv4.sh &&./build-opencv4.sh
+
+      # 7z压缩
+      - name: 7zip
+        run: |
+          cp -r opencv-${{ matrix.ver.cv }}/build-Release/install macos
+          7z a ${{ env.PKG_NAME }}.7z macos
+
+      # 编译
+      - name: build java
+        run: |
+          cd opencv-${{ matrix.ver.cv }}
+          chmod a+x build-opencv4-java.sh &&./build-opencv4-java.sh
+
+      # 7z压缩
+      - name: 7zip
+        run: |
+          cp -r opencv-${{ matrix.ver.cv }}/build-Release/install/share/java/opencv4 ${{ env.JAVA_PKG_NAME }}
+          7z a ${{ env.JAVA_PKG_NAME }}.7z ${{ env.JAVA_PKG_NAME }}
+
+      # 上传artifact
+      - name: upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.PKG_NAME }}
+          path: ${{ env.PKG_NAME }}.7z
+
+      # 上传artifact
+      - name: upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.JAVA_PKG_NAME }}
+          path: ${{ env.JAVA_PKG_NAME }}.7z
+
+      # 获取所有的git log和tag
+      - name: Unshallow
+        run: git fetch --prune --unshallow
+
+      # 获取git log 从 previousTag 到 lastTag
+      - name: Get git log
+        id: git-log
+        run: |
+          previousTag=$(git describe --abbrev=0 --tags `git rev-list --tags --skip=1 --max-count=1`)
+          lastTag=$(git describe --abbrev=0 --tags)
+          echo "previousTag:$previousTag ~ lastTag:$lastTag"
+          log=$(git log $previousTag..$lastTag --pretty=format:'- %cd %an: %s\n' --date=format:'%Y-%m-%d %H:%M:%S')
+          echo "$log"
+          echo "log_state="$log"" >> $GITHUB_ENV
+
+      # 创建Changelog文件 triggered by git tag push
+      - name: Generate Changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo -e '${{ env.log_state }}' > release.md
+
+      # 创建release 上传release
+      # https://github.com/marketplace/actions/create-release
+      - name: Create release and upload-archive
+        uses: ncipollo/release-action@v1
+        with:
+          prerelease: false
+          bodyFile: release.md
+          artifacts: ${{ env.PKG_NAME }}.7z, ${{ env.JAVA_PKG_NAME }}.7z
+          allowUpdates: true
+          artifactContentType: application/x-7z-compressed
+          token: ${{ secrets.GITHUB_TOKEN }}
